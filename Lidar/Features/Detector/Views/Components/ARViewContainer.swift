@@ -21,7 +21,7 @@ struct ARViewContainer: UIViewRepresentable {
         arView.environment.sceneUnderstanding.options = []
         arView.environment.background = .cameraFeed()
         arView.renderOptions = [.disablePersonOcclusion, .disableDepthOfField, .disableMotionBlur]
-        print("INITED \(viewModel.arSession == nil)")
+        
         if let session = viewModel.arSession {
             arView.session = session
         }
@@ -30,10 +30,6 @@ struct ARViewContainer: UIViewRepresentable {
     }
     
     func updateUIView(_ uiView: ARView, context: Context) {
-        // Connect to the ARSession of the ViewModel
-//        if uiView.session != viewModel.arSession {
-//            uiView.session = viewModel.arSession ?? ARSession()
-//        }
         if uiView.session !== viewModel.arSession {
             if let arSession = viewModel.arSession {
                 uiView.session = arSession

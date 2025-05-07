@@ -84,7 +84,6 @@ class DetectorViewModel: ObservableObject {
         guard let frame = arSession?.currentFrame,
               let depthData = frame.sceneDepth
         else {
-            print("DetectorViewModel -> No depth data \(arSession?.currentFrame) : \(arSession?.currentFrame?.sceneDepth)")
             distanceText = "No depth data"
             proximityLevel = .unknown
             return
