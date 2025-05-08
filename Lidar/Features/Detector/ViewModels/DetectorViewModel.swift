@@ -45,8 +45,8 @@ class DetectorViewModel: ObservableObject {
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
             isARSupported = true
         } else {
-            isARSupported = false
-            distanceText = "LiDAR not supported on this device"
+            isARSupported = true
+            distanceText = "Using limited depth estimation"
         }
     }
     
@@ -54,19 +54,25 @@ class DetectorViewModel: ObservableObject {
         guard isARSupported else { return }
                 
         let arSession = ARSession()
-        
         let configuration = ARWorldTrackingConfiguration()
+        
         if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
             configuration.sceneReconstruction = .mesh
         }
+        
+        configuration.planeDetection = [.horizontal, .vertical]
         configuration.environmentTexturing = .automatic
         configuration.videoFormat = ARWorldTrackingConfiguration.supportedVideoFormats.first!
-        configuration.frameSemantics = .sceneDepth
+        
+        /// Only enable sceneDepth if available (LIDAR availabe)
+        if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
+            configuration.frameSemantics = .sceneDepth
+        }
         
         arSession.run(configuration)
         self.arSession = arSession
         
-        // Set up a timer to update distance every 0.5 seconds
+        /// Set up a timer to update distance every 0.5 seconds
         Timer.publish(every: 0.5, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
@@ -81,65 +87,155 @@ class DetectorViewModel: ObservableObject {
     }
     
     private func updateDistance() {
-        guard let frame = arSession?.currentFrame,
-              let depthData = frame.sceneDepth
+        guard let frame = arSession?.currentFrame
         else {
-            distanceText = "No depth data"
+            distanceText = "No Session"
             proximityLevel = .unknown
             return
         }
         
-        let depthMap = depthData.depthMap
-        
-        // Get the dimensions of the depth map
-        let width = CVPixelBufferGetWidth(depthMap)
-        let height = CVPixelBufferGetHeight(depthMap)
-        
-        // Get the center point
-        let centerX = width / 2
-        let centerY = height / 2
-        
-        // Lock the base address
-        CVPixelBufferLockBaseAddress(depthMap, .readOnly)
-        
-        // Get the address of the center pixel
-        let bytesPerRow = CVPixelBufferGetBytesPerRow(depthMap)
-        let baseAddress = CVPixelBufferGetBaseAddress(depthMap)!
-        
-        // Depth map contains 32-bit float values
-        let floatBuffer = baseAddress.assumingMemoryBound(to: Float32.self)
-        let index = centerY * bytesPerRow / 4 + centerX
-        let distance = floatBuffer[index]
-        
-        // Unlock the base address when done
-        CVPixelBufferUnlockBaseAddress(depthMap, .readOnly)
-        
-        if distance.isNaN || distance <= 0 {
-            DispatchQueue.main.async {
-                self.distanceText = "Out of range"
-                self.proximityLevel = .unknown
+        if let depthData = frame.sceneDepth {
+            let depthMap = depthData.depthMap
+            
+            let width = CVPixelBufferGetWidth(depthMap)
+            let height = CVPixelBufferGetHeight(depthMap)
+            
+            /// Get the center point of image
+            let centerX = width / 2
+            let centerY = height / 2
+            
+            /// Lock the base address
+            CVPixelBufferLockBaseAddress(depthMap, .readOnly)
+            
+            /// Get the address of the center pixel
+            let bytesPerRow = CVPixelBufferGetBytesPerRow(depthMap)
+            let baseAddress = CVPixelBufferGetBaseAddress(depthMap)!
+            
+            /// Fetch distance value
+            let floatBuffer = baseAddress.assumingMemoryBound(to: Float32.self)
+            let index = centerY * bytesPerRow / 4 + centerX
+            let distance = floatBuffer[index]
+            
+            /// Unlock the base address when done to prevent memory leak
+            CVPixelBufferUnlockBaseAddress(depthMap, .readOnly)
+            
+            if distance.isNaN || distance <= 0 {
+                DispatchQueue.main.async {
+                    self.distanceText = "Out of range"
+                    self.proximityLevel = .unknown
+                }
+                return
             }
-            return
-        }
-        
-        // Convert distance to cm and m
-        let distanceInMeters = Double(distance)
-        let distanceInCm = distanceInMeters * 100
-        
-        // Determine proximity level
-        let level: ProximityLevel
-        if distanceInMeters < 0.5 {
-            level = .near
-        } else if distanceInMeters < 2.0 {
-            level = .medium
+            
+            /// Convert distance to cm and m
+            let distanceInMeters = Double(distance)
+            let distanceInCm = distanceInMeters * 100
+            
+            /// Determine proximity level
+            let level: ProximityLevel
+            if distanceInMeters < 0.5 {
+                level = .near
+            } else if distanceInMeters < 2.0 {
+                level = .medium
+            } else {
+                level = .far
+            }
+            
+            /// Update UI on main thread
+            DispatchQueue.main.async {
+                self.distanceText = String(format: "%.2f m (%.0f cm)", distanceInMeters, distanceInCm)
+                self.proximityLevel = level
+            }
         } else {
-            level = .far
+            /// lidar not suported, detect using raycast
+            let center = CGPoint(x: 0.5, y: 0.5)
+            if let query = arSession?.currentFrame?.raycastQuery(from: center, allowing: .estimatedPlane, alignment: .any),
+               let result = arSession?.raycast(query).first
+            {
+                let position = result.worldTransform.columns.3
+                let distance = simd_length(position) // in meters
+                let distanceInCm = distance * 100
+                
+                let level: ProximityLevel
+                if distance < 0.5 {
+                    level = .near
+                } else if distance < 2.0 {
+                    level = .medium
+                } else {
+                    level = .far
+                }
+
+                DispatchQueue.main.async {
+                    self.distanceText = String(format: "%.2f m (%.0f cm)", distance, distanceInCm)
+                    self.proximityLevel = level
+                }
+            } else {
+                DispatchQueue.main.async {
+                    self.distanceText = "No surface detected"
+                    self.proximityLevel = .unknown
+                }
+            }
         }
         
-        // Update UI on main thread
-        DispatchQueue.main.async {
-            self.distanceText = String(format: "%.2f m (%.0f cm)", distanceInMeters, distanceInCm)
-            self.proximityLevel = level
-        }
+//        guard let frame = arSession?.currentFrame,
+//              let depthData = frame.sceneDepth
+//        else {
+//            distanceText = "No depth data"
+//            proximityLevel = .unknown
+//            return
+//        }
+//
+//        let depthMap = depthData.depthMap
+//
+//        // Get the dimensions of the depth map
+//        let width = CVPixelBufferGetWidth(depthMap)
+//        let height = CVPixelBufferGetHeight(depthMap)
+//
+//        // Get the center point
+//        let centerX = width / 2
+//        let centerY = height / 2
+//
+//        // Lock the base address
+//        CVPixelBufferLockBaseAddress(depthMap, .readOnly)
+//
+//        // Get the address of the center pixel
+//        let bytesPerRow = CVPixelBufferGetBytesPerRow(depthMap)
+//        let baseAddress = CVPixelBufferGetBaseAddress(depthMap)!
+//
+//        // Depth map contains 32-bit float values
+//        let floatBuffer = baseAddress.assumingMemoryBound(to: Float32.self)
+//        let index = centerY * bytesPerRow / 4 + centerX
+//        let distance = floatBuffer[index]
+//
+//        // Unlock the base address when done
+//        CVPixelBufferUnlockBaseAddress(depthMap, .readOnly)
+//
+//        if distance.isNaN || distance <= 0 {
+//            DispatchQueue.main.async {
+//                self.distanceText = "Out of range"
+//                self.proximityLevel = .unknown
+//            }
+//            return
+//        }
+//
+//        // Convert distance to cm and m
+//        let distanceInMeters = Double(distance)
+//        let distanceInCm = distanceInMeters * 100
+//
+//        // Determine proximity level
+//        let level: ProximityLevel
+//        if distanceInMeters < 0.5 {
+//            level = .near
+//        } else if distanceInMeters < 2.0 {
+//            level = .medium
+//        } else {
+//            level = .far
+//        }
+//
+//        // Update UI on main thread
+//        DispatchQueue.main.async {
+//            self.distanceText = String(format: "%.2f m (%.0f cm)", distanceInMeters, distanceInCm)
+//            self.proximityLevel = level
+//        }
     }
 }

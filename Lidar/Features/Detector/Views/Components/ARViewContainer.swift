@@ -20,7 +20,7 @@ struct ARViewContainer: UIViewRepresentable {
         // Set environment settings to show camera feed
         arView.environment.sceneUnderstanding.options = []
         arView.environment.background = .cameraFeed()
-        arView.renderOptions = [.disablePersonOcclusion, .disableDepthOfField, .disableMotionBlur]
+        arView.renderOptions = [.disablePersonOcclusion, .disableMotionBlur]
         
         if let session = viewModel.arSession {
             arView.session = session
