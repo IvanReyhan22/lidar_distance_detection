@@ -40,6 +40,6 @@ struct DetectorPage: View {
     }
 }
 
-#Preview {
-    DetectorPage()
-}
+//#Preview {
+//    DetectorPage()
+//}
